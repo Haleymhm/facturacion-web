@@ -1,0 +1,674 @@
+<?php
+/**
+ * This file is part of FacturaScripts
+ * Copyright (C) 2021-2026 Carlos Garcia Gomez <carlos@facturascripts.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+namespace FacturaScripts\Core\Lib\AjaxForms;
+
+use FacturaScripts\Core\DataSrc\Paises;
+use FacturaScripts\Core\DataSrc\Series;
+use FacturaScripts\Core\Lib\Calculator;
+use FacturaScripts\Core\Lib\ExtendedController\BaseView;
+use FacturaScripts\Core\Lib\ExtendedController\DocFilesTrait;
+use FacturaScripts\Core\Lib\ExtendedController\LogAuditTrait;
+use FacturaScripts\Core\Lib\ExtendedController\PanelController;
+use FacturaScripts\Core\Model\Base\BusinessDocumentLine;
+use FacturaScripts\Core\Model\Base\PurchaseDocument;
+use FacturaScripts\Core\Tools;
+use FacturaScripts\Core\Where;
+use FacturaScripts\Dinamic\Lib\AssetManager;
+use FacturaScripts\Dinamic\Model\Proveedor;
+use FacturaScripts\Dinamic\Model\Variante;
+use Throwable;
+
+/**
+ * Description of PurchasesController
+ *
+ * @author Carlos Garcia Gomez           <carlos@facturascripts.com>
+ * @author Jose Antonio Cuello Principal <yopli2000@gmail.com>
+ */
+abstract class PurchasesController extends PanelController
+{
+    use DocFilesTrait;
+    use LogAuditTrait;
+
+    const MAIN_VIEW_NAME = 'main';
+    const MAIN_VIEW_TEMPLATE = 'Tab/PurchasesDocument';
+
+    /** @var array */
+    private $logLevels = ['critical', 'error', 'info', 'notice', 'warning'];
+
+    abstract public function getModelClassName();
+
+    public function getModel(bool $reload = false): PurchaseDocument
+    {
+        if ($reload) {
+            $this->views[static::MAIN_VIEW_NAME]->model->clear();
+        }
+
+        // loaded record? just return it
+        if ($this->views[static::MAIN_VIEW_NAME]->model->id()) {
+            return $this->views[static::MAIN_VIEW_NAME]->model;
+        }
+
+        // get the record identifier
+        $code = $this->request->queryOrInput('code');
+        if (empty($code)) {
+            // empty identifier? Then sets initial parameters to the new record and return it
+            $formData = $this->request->query->all();
+            PurchasesHeaderHTML::apply($this->views[static::MAIN_VIEW_NAME]->model, $formData);
+            return $this->views[static::MAIN_VIEW_NAME]->model;
+        }
+
+        // existing record
+        $this->views[static::MAIN_VIEW_NAME]->model->load($code);
+        return $this->views[static::MAIN_VIEW_NAME]->model;
+    }
+
+    /**
+     * @param PurchaseDocument $model
+     * @param BusinessDocumentLine[] $lines
+     *
+     * @return string
+     */
+    public function renderPurchasesForm(PurchaseDocument $model, array $lines): string
+    {
+        $url = empty($model->id()) ? $this->url() : $model->url();
+
+        return '<div id="purchasesFormHeader">' . PurchasesHeaderHTML::render($model) . '</div>'
+            . '<div id="purchasesFormLines">' . PurchasesLineHTML::render($lines, $model) . '</div>'
+            . '<div id="purchasesFormFooter">' . PurchasesFooterHTML::render($model) . '</div>'
+            . PurchasesModalHTML::render($model, $url);
+    }
+
+    public function series(string $type = ''): array
+    {
+        if (empty($type)) {
+            return Series::all();
+        }
+
+        $list = [];
+        foreach (Series::all() as $serie) {
+            if ($serie->tipo == $type) {
+                $list[] = $serie;
+            }
+        }
+
+        return $list;
+    }
+
+    protected function autocompleteProductAction(): bool
+    {
+        $this->setTemplate(false);
+
+        $list = [];
+        $variante = new Variante();
+        $query = (string)$this->request->queryOrInput('term');
+        $where = [
+            Where::eq('p.bloqueado', 0),
+            Where::eq('p.secompra', 1)
+        ];
+        foreach ($variante->codeModelSearch($query, 'referencia', $where) as $value) {
+            $list[] = [
+                'key' => Tools::fixHtml($value->code),
+                'value' => Tools::fixHtml($value->description)
+            ];
+        }
+
+        if (empty($list)) {
+            $list[] = ['key' => null, 'value' => Tools::trans('no-data')];
+        }
+
+        $this->response->json($list);
+        return false;
+    }
+
+    protected function createViews()
+    {
+        $this->setTabsPosition('top');
+        $this->createViewsDoc();
+        $this->createViewDocFiles();
+        $this->createViewLogAudit();
+    }
+
+    protected function createViewsDoc(): void
+    {
+        $pageData = $this->getPageData();
+        $this->addHtmlView(static::MAIN_VIEW_NAME, static::MAIN_VIEW_TEMPLATE, $this->getModelClassName(), $pageData['title'], 'fa-solid fa-file');
+
+        $route = Tools::config('route');
+        AssetManager::addCss($route . '/node_modules/jquery-ui-dist/jquery-ui.min.css', 2);
+        AssetManager::addJs($route . '/node_modules/jquery-ui-dist/jquery-ui.min.js', 2);
+
+        PurchasesHeaderHTML::assets();
+        PurchasesLineHTML::assets();
+        PurchasesFooterHTML::assets();
+        PurchasesModalHTML::assets();
+    }
+
+    protected function deleteDocAction(): bool
+    {
+        $this->setTemplate(false);
+
+        // comprobamos los permisos
+        if (false === $this->permissions->allowDelete) {
+            Tools::log()->warning('not-allowed-delete');
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        $model = $this->getModel();
+        if (false === $model->delete()) {
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        $this->sendJsonWithLogs(['ok' => true, 'newurl' => $model->url('list')]);
+        return false;
+    }
+
+    /**
+     * @param string $action
+     *
+     * @return bool
+     */
+    protected function execPreviousAction($action)
+    {
+        // control de acceso: si se opera (o exporta) sobre un documento existente
+        // que no pertenece al usuario, denegamos. Evita el acceso por código directo.
+        $code = $this->request->queryOrInput('code');
+        if (
+            false === empty($action) && false === empty($code)
+            && false === $this->checkOwnerData($this->getModel())
+        ) {
+            $this->setTemplate(false);
+            Tools::log()->warning('access-denied');
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        switch ($action) {
+            case 'add-file':
+                return $this->addFileAction();
+
+            case 'autocomplete-product':
+                return $this->autocompleteProductAction();
+
+            case 'add-product':
+            case 'fast-line':
+            case 'fast-product':
+            case 'new-line':
+            case 'recalculate':
+            case 'rm-line':
+            case 'set-supplier':
+                return $this->recalculateAction(true);
+
+            case 'create-supplier':
+                return $this->createSupplierAction();
+
+            case 'delete-doc':
+                return $this->deleteDocAction();
+
+            case 'delete-file':
+                return $this->deleteFileAction();
+
+            case 'edit-file':
+                return $this->editFileAction();
+
+            case 'find-supplier':
+                return $this->findSupplierAction();
+
+            case 'find-product':
+                return $this->findProductAction();
+
+            case 'recalculate-line':
+                return $this->recalculateAction(false);
+
+            case 'save-doc':
+                $this->saveDocAction();
+                return false;
+
+            case 'save-paid':
+                return $this->savePaidAction();
+
+            case 'save-status':
+                return $this->saveStatusAction();
+
+            case 'sort-files':
+                return $this->sortFilesAction();
+
+            case 'unlink-file':
+                return $this->unlinkFileAction();
+        }
+
+        return parent::execPreviousAction($action);
+    }
+
+    protected function createSupplierAction(): bool
+    {
+        $this->setTemplate(false);
+
+        if (false === $this->user->can('EditProveedor', 'update')) {
+            Tools::log()->warning('not-allowed-modify');
+            $this->sendJsonWithLogs($this->emptyPurchasesResponse());
+            return false;
+        }
+
+        if (false === $this->validateFormToken()) {
+            $this->sendJsonWithLogs($this->emptyPurchasesResponse());
+            return false;
+        }
+
+        $formData = json_decode($this->request->input('data'), true);
+        if (false === is_array($formData)) {
+            Tools::log()->warning('invalid-request');
+            $this->sendJsonWithLogs($this->emptyPurchasesResponse());
+            return false;
+        }
+
+        foreach (['newsupplier_nombre', 'newsupplier_direccion', 'newsupplier_ciudad', 'newsupplier_provincia'] as $field) {
+            if (false === is_string($formData[$field] ?? null) || trim($formData[$field]) === '') {
+                Tools::log()->warning('invalid-request');
+                $this->sendJsonWithLogs($this->emptyPurchasesResponse());
+                return false;
+            }
+
+            $formData[$field] = trim($formData[$field]);
+        }
+
+        $countryCode = is_string($formData['newsupplier_codpais'] ?? null) ? $formData['newsupplier_codpais'] : '';
+        if (empty($countryCode) || false === Paises::get($countryCode)->exists()) {
+            Tools::log()->warning('invalid-request');
+            $this->sendJsonWithLogs($this->emptyPurchasesResponse());
+            return false;
+        }
+
+        $supplier = new Proveedor();
+        $supplier->cifnif = $formData['newsupplier_cifnif'] ?? '';
+        $supplier->email = $formData['newsupplier_email'] ?? '';
+        $supplier->nombre = $formData['newsupplier_nombre'] ?? '';
+        $supplier->telefono1 = $formData['newsupplier_telefono'] ?? '';
+
+        $this->db()->beginTransaction();
+        try {
+            if (false === $supplier->save()) {
+                $this->db()->rollback();
+                $this->sendJsonWithLogs($this->emptyPurchasesResponse());
+                return false;
+            }
+
+            $address = $supplier->getDefaultAddress();
+            $address->cifnif = $supplier->cifnif;
+            $address->ciudad = $formData['newsupplier_ciudad'] ?? '';
+            $address->codpais = $countryCode;
+            $address->codpostal = $formData['newsupplier_codpostal'] ?? '';
+            $address->direccion = $formData['newsupplier_direccion'] ?? '';
+            $address->provincia = $formData['newsupplier_provincia'] ?? '';
+            if (false === $address->save()) {
+                $this->db()->rollback();
+                $this->sendJsonWithLogs($this->emptyPurchasesResponse());
+                return false;
+            }
+
+            $this->db()->commit();
+        } catch (Throwable $e) {
+            $this->db()->rollback();
+            Tools::log()->error($e->getMessage());
+            $this->sendJsonWithLogs($this->emptyPurchasesResponse());
+            return false;
+        }
+
+        $formData['action'] = 'set-supplier';
+        $formData['codproveedor'] = $supplier->codproveedor;
+
+        $model = $this->getModel();
+        $lines = $model->getLines();
+        PurchasesHeaderHTML::apply($model, $formData);
+        PurchasesFooterHTML::apply($model, $formData);
+        PurchasesLineHTML::apply($model, $lines, $formData);
+        Calculator::calculate($model, $lines, false);
+
+        $this->sendJsonWithLogs([
+            'supplierCreated' => true,
+            'footer' => PurchasesFooterHTML::render($model),
+            'header' => PurchasesHeaderHTML::render($model),
+            'lines' => PurchasesLineHTML::render($lines, $model),
+            'linesMap' => [],
+            'multireqtoken' => $this->multiRequestProtection->newToken(),
+            'products' => '',
+        ]);
+        return false;
+    }
+
+    protected function exportAction()
+    {
+        if (false === $this->permissions->allowExport) {
+            Tools::log()->warning('no-print-permission');
+            return;
+        }
+
+        $this->setTemplate(false);
+
+        $subjectLang = $this->views[static::MAIN_VIEW_NAME]->model->getSubject()->langcode;
+        $requestLang = $this->request->input('langcode');
+        $langCode = $requestLang ?? $subjectLang ?? '';
+
+        $this->exportManager->newDoc(
+            $this->request->queryOrInput('option', ''),
+            $this->title,
+            (int)$this->request->input('idformat', ''),
+            $langCode
+        );
+        $this->exportManager->addBusinessDocPage($this->views[static::MAIN_VIEW_NAME]->model);
+        $this->exportManager->show($this->response);
+    }
+
+    protected function findSupplierAction(): bool
+    {
+        $this->setTemplate(false);
+        $supplier = new Proveedor();
+        $list = [];
+        $term = $this->request->queryOrInput('term');
+        foreach ($supplier->codeModelSearch($term) as $item) {
+            $list[$item->code] = $item->code . ' | ' . Tools::fixHtml($item->description);
+        }
+        $this->response->json($list);
+        return false;
+    }
+
+    protected function findProductAction(): bool
+    {
+        $this->setTemplate(false);
+        $model = $this->getModel();
+        $formData = json_decode($this->request->input('data'), true) ?? [];
+        PurchasesHeaderHTML::apply($model, $formData);
+        PurchasesFooterHTML::apply($model, $formData);
+        PurchasesModalHTML::apply($model, $formData);
+        $content = [
+            'header' => '',
+            'lines' => '',
+            'linesMap' => [],
+            'footer' => '',
+            'products' => PurchasesModalHTML::renderProductList()
+        ];
+        $this->sendJsonWithLogs($content);
+        return false;
+    }
+
+    /**
+     * @param string $viewName
+     * @param BaseView $view
+     */
+    protected function loadData($viewName, $view)
+    {
+        $code = $this->request->queryOrInput('code');
+
+        switch ($viewName) {
+            case 'docfiles':
+                $this->loadDataDocFiles($view, $this->getModelClassName(), $code);
+                break;
+
+            case 'ListLogMessage':
+                $this->loadDataLogAudit($view, $this->getModelClassName(), $code);
+                break;
+
+            case static::MAIN_VIEW_NAME:
+                if (empty($code)) {
+                    $this->getModel(true);
+                    break;
+                }
+
+                $view->loadData($code);
+
+                // ¿el usuario puede acceder a este documento?
+                if (false === $this->checkOwnerData($view->model)) {
+                    $this->setTemplate('Error/AccessDenied');
+                    break;
+                }
+
+                // data not found?
+                $action = $this->request->input('action', '');
+                if ('' === $action && empty($view->model->primaryColumnValue())) {
+                    Tools::log()->warning('record-not-found');
+                    break;
+                }
+
+                $this->title .= ' ' . $view->model->primaryDescription();
+                $view->settings['btnPrint'] = true;
+                $view->addButton([
+                    'action' => 'CopyModel?model=' . $this->getModelClassName() . '&code=' . $view->model->primaryColumnValue(),
+                    'icon' => 'fa-solid fa-cut',
+                    'label' => 'copy',
+                    'type' => 'link'
+                ]);
+                break;
+        }
+    }
+
+    protected function recalculateAction(bool $renderLines): bool
+    {
+        $this->setTemplate(false);
+        $model = $this->getModel();
+        $lines = $model->getLines();
+        $formData = json_decode($this->request->input('data'), true) ?? [];
+        PurchasesHeaderHTML::apply($model, $formData);
+        PurchasesFooterHTML::apply($model, $formData);
+        PurchasesLineHTML::apply($model, $lines, $formData);
+        Calculator::calculate($model, $lines, false);
+
+        $content = [
+            'header' => PurchasesHeaderHTML::render($model),
+            'lines' => $renderLines ? PurchasesLineHTML::render($lines, $model) : '',
+            'linesMap' => $renderLines ? [] : PurchasesLineHTML::map($lines, $model),
+            'footer' => PurchasesFooterHTML::render($model),
+            'products' => ''
+        ];
+        $this->sendJsonWithLogs($content);
+        return false;
+    }
+
+    protected function saveDocAction(bool $sendOk = true): bool
+    {
+        $this->setTemplate(false);
+
+        // comprobamos los permisos
+        if (false === $this->permissions->allowUpdate) {
+            Tools::log()->warning('not-allowed-modify');
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        $model = $this->getModel();
+
+        // si los datos del formulario no llegan o no son JSON válido (petición truncada,
+        // límites post_max_size / max_input_vars), rechazamos en lugar de guardar en blanco
+        $formData = json_decode($this->request->input('data'), true);
+        if (false === is_array($formData)) {
+            Tools::log()->warning('invalid-request');
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        // bloqueo optimista: si el estado del documento ha cambiado desde que se cargó el formulario,
+        // rechazamos para no borrar líneas a partir de un formulario obsoleto (tarea 4673)
+        if (isset($formData['idestado']) && (int)$formData['idestado'] !== (int)$model->idestado) {
+            Tools::log()->warning('document-state-changed');
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        $this->db()->beginTransaction();
+
+        PurchasesHeaderHTML::apply($model, $formData);
+        PurchasesFooterHTML::apply($model, $formData);
+
+        if (false === $model->save()) {
+            $this->db()->rollback();
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        $lines = $model->getLines();
+        PurchasesLineHTML::apply($model, $lines, $formData);
+        Calculator::calculate($model, $lines, false);
+
+        foreach ($lines as $line) {
+            if (false === $line->save()) {
+                $this->db()->rollback();
+                $this->sendJsonWithLogs(['ok' => false]);
+                return false;
+            }
+        }
+
+        // remove missing lines
+        foreach ($model->getLines() as $oldLine) {
+            if (in_array($oldLine->idlinea, PurchasesLineHTML::getDeletedLines()) && false === $oldLine->delete()) {
+                $this->db()->rollback();
+                $this->sendJsonWithLogs(['ok' => false]);
+                return false;
+            }
+        }
+
+        $lines = $model->getLines();
+        if (false === Calculator::calculate($model, $lines, true)) {
+            $this->db()->rollback();
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        $this->db()->commit();
+
+        if ($sendOk) {
+            $this->sendJsonWithLogs(['ok' => true, 'newurl' => $model->url() . '&action=save-ok']);
+        }
+        return true;
+    }
+
+    protected function savePaidAction(): bool
+    {
+        $this->setTemplate(false);
+
+        // comprobamos los permisos
+        if (false === $this->permissions->allowUpdate) {
+            Tools::log()->warning('not-allowed-modify');
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        // guardamos el documento
+        if ($this->getModel()->editable && false === $this->saveDocAction()) {
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        // cargamos el modelo actualizado y los datos del form
+        $model = $this->getModel();
+        $formData = json_decode($this->request->input('data'), true);
+
+        // si la factura es de 0 €, la marcamos como pagada
+        if (empty($model->total) && $model->hasColumn('pagada')) {
+            $model->pagada = (bool)$formData['paid-status'];
+            $model->save();
+            $this->sendJsonWithLogs(['ok' => true, 'newurl' => $model->url() . '&action=save-ok']);
+            return false;
+        }
+
+        // comprobamos si tiene recibos
+        $receipts = $model->getReceipts();
+        if (empty($receipts)) {
+            Tools::log()->warning('invoice-has-no-receipts');
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        // marcamos los recibos como pagados, eso marcará la factura como pagada
+        $formData = json_decode($this->request->input('data'), true);
+        foreach ($receipts as $receipt) {
+            $receipt->nick = $this->user->nick;
+            // si no está pagado, actualizamos fechapago y codpago
+            if (false == $receipt->pagado) {
+                $receipt->fechapago = $formData['paid-date-modal'] ?? Tools::date();
+                $receipt->codpago = $formData['paid-payment-modal'] ?? $model->codpago;
+            }
+            $receipt->pagado = (bool)$formData['paid-status'];
+            if (false === $receipt->save()) {
+                $this->sendJsonWithLogs(['ok' => false]);
+                return false;
+            }
+        }
+
+        $this->sendJsonWithLogs(['ok' => true, 'newurl' => $model->url() . '&action=save-ok']);
+        return false;
+    }
+
+    protected function saveStatusAction(): bool
+    {
+        $this->setTemplate(false);
+
+        // comprobamos los permisos
+        if (false === $this->permissions->allowUpdate) {
+            Tools::log()->warning('not-allowed-modify');
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        if ($this->getModel()->editable && false === $this->saveDocAction(false)) {
+            return false;
+        }
+
+        $this->db()->beginTransaction();
+
+        $model = $this->getModel();
+        $model->idestado = (int)$this->request->input('selectedLine');
+
+        try {
+            if (false === $model->save()) {
+                $this->db()->rollback();
+                $this->sendJsonWithLogs(['ok' => false]);
+                return false;
+            }
+        } catch (Throwable $e) {
+            $this->db()->rollback();
+            Tools::log()->error($e->getMessage());
+            $this->sendJsonWithLogs(['ok' => false]);
+            return false;
+        }
+
+        $this->db()->commit();
+        $this->sendJsonWithLogs(['ok' => true, 'newurl' => $model->url() . '&action=save-ok']);
+        return false;
+    }
+
+    private function emptyPurchasesResponse(): array
+    {
+        return [
+            'supplierCreated' => false,
+            'footer' => '',
+            'header' => '',
+            'lines' => '',
+            'linesMap' => [],
+            'multireqtoken' => $this->multiRequestProtection->newToken(),
+            'products' => '',
+        ];
+    }
+
+    private function sendJsonWithLogs(array $data): void
+    {
+        $data['messages'] = Tools::log()::read('master', $this->logLevels);
+        $this->response->json($data);
+    }
+}

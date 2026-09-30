@@ -1,0 +1,20 @@
+{
+    "default": {
+        "coddivisa": "PEN",
+        "codimpuesto": "IGV_GEN",
+        "codserie": "A",
+        "codpago": "CONT",
+        "currency_position": "left",
+        "decimal_separator": ".",
+        "thousands_separator": ",",
+        "tipoidfiscal": "RUC",
+        "updatesupplierprices": true,
+        "validate_iban": false
+    },
+    "email": {
+        "enc": "ssl",
+        "host": "smtp.gmail.com",
+        "mailer": "smtp",
+        "port": "465"
+    }
+}

@@ -1,0 +1,148 @@
+<?php
+/**
+ * This file is part of FacturaScripts
+ * Copyright (C) 2013-2025 Carlos Garcia Gomez <carlos@facturascripts.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+namespace FacturaScripts\Core\Model;
+
+use FacturaScripts\Core\Logger;
+use FacturaScripts\Core\Template\ModelClass;
+use FacturaScripts\Core\Template\ModelTrait;
+use FacturaScripts\Core\Tools;
+
+/**
+ * Model to persist data from logs.
+ *
+ * @author Carlos García Gómez      <carlos@facturascripts.com>
+ * @author Francesc Pineda Segarra  <francesc.pineda.segarra@gmail.com>
+ */
+class LogMessage extends ModelClass
+{
+    use ModelTrait;
+
+    const AUDIT_CHANNEL = 'audit';
+    const DOCS_CHANNEL = 'docs';
+    const MAX_MESSAGE_LEN = 3000;
+    const VALID_LEVELS = [
+        Logger::LEVEL_CRITICAL,
+        Logger::LEVEL_DEBUG,
+        Logger::LEVEL_ERROR,
+        Logger::LEVEL_INFO,
+        Logger::LEVEL_NOTICE,
+        Logger::LEVEL_WARNING,
+    ];
+
+    /** Canal al que pertenece el mensaje de log. @var string */
+    public $channel;
+
+    /** Contexto adicional del mensaje codificado en formato JSON. @var string */
+    public $context;
+
+    /** Identificador único del mensaje de log. @var int */
+    public $id;
+
+    /** Identificador del contacto relacionado con el mensaje. @var int */
+    public $idcontacto;
+
+    /** Dirección IP desde la que se generó el mensaje. @var string */
+    public $ip;
+
+    /** Nivel de severidad del mensaje de log. @var string */
+    public $level;
+
+    /** Contenido del mensaje de log. @var string */
+    public $message;
+
+    /** Nombre del modelo relacionado con el mensaje. @var string */
+    public $model;
+
+    /** Código del registro relacionado con el mensaje. @var string */
+    public $modelcode;
+
+    /** Nombre del usuario que generó el mensaje. @var string */
+    public $nick;
+
+    /** Fecha y hora en la que se generó el mensaje. @var string */
+    public $time;
+
+    /** URI de la solicitud durante la que se generó el mensaje. @var string */
+    public $uri;
+
+    public function clear(): void
+    {
+        parent::clear();
+        $this->time = Tools::dateTime();
+    }
+
+    /**
+     * Returns the saved context as array.
+     *
+     * @return array
+     */
+    public function context(): array
+    {
+        return json_decode(Tools::fixHtml($this->context) ?? '', true) ?? [];
+    }
+
+    public function delete(): bool
+    {
+        if ($this->channel === self::AUDIT_CHANNEL) {
+            Tools::log()->warning('cant-delete-audit-log');
+            return false;
+        }
+
+        return parent::delete();
+    }
+
+    public static function tableName(): string
+    {
+        return 'logs';
+    }
+
+    public function test(): bool
+    {
+        $this->channel = Tools::noHtml($this->channel);
+        $this->context = Tools::noHtml($this->context);
+        $this->ip = Tools::noHtml($this->ip);
+        $this->message = Tools::noHtml($this->message);
+        if (mb_strlen($this->message, 'UTF-8') > static::MAX_MESSAGE_LEN) {
+            $this->message = mb_substr($this->message, 0, static::MAX_MESSAGE_LEN, 'UTF-8');
+        }
+
+        $this->model = Tools::noHtml($this->model);
+        $this->modelcode = Tools::noHtml($this->modelcode);
+        $this->nick = Tools::noHtml($this->nick);
+        $this->uri = Tools::noHtml($this->uri);
+
+        if (false === in_array($this->level, static::VALID_LEVELS)) {
+            Tools::log()->warning('invalid-log-level', ['%level%' => $this->level]);
+            return false;
+        }
+
+        return parent::test();
+    }
+
+    protected function saveUpdate(): bool
+    {
+        if ($this->channel === self::AUDIT_CHANNEL) {
+            Tools::log()->warning('cant-update-audit-log');
+            return false;
+        }
+
+        return parent::saveUpdate();
+    }
+}

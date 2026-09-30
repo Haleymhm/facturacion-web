@@ -1,0 +1,100 @@
+<?php
+/**
+ * This file is part of FacturaScripts
+ * Copyright (C) 2019-2025 Carlos Garcia Gomez <carlos@facturascripts.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+namespace FacturaScripts\Core\Model;
+
+use FacturaScripts\Core\Template\ModelClass;
+use FacturaScripts\Core\Template\ModelTrait;
+use FacturaScripts\Core\Tools;
+
+/**
+ * Model to personalize the print format of sales and buy documents.
+ *
+ * @author Cristo M. Estévez Hernández  <cristom.estevez@gmail.com>
+ * @author Carlos García Gómez          <carlos@facturascripts.com>
+ */
+class FormatoDocumento extends ModelClass
+{
+    use ModelTrait;
+
+    /** Indica si el formato se aplica automáticamente al imprimir. @var bool */
+    public $autoaplicar;
+
+    /** Código de la serie a la que se aplica el formato. @var string */
+    public $codserie;
+
+    /** Identificador único del formato de documento. @var int */
+    public $id;
+
+    /** Identificador de la empresa a la que pertenece el formato. @var int */
+    public $idempresa;
+
+    /** Identificador del archivo utilizado como logotipo. @var int */
+    public $idlogo;
+
+    /** Nombre identificativo del formato de documento. @var string */
+    public $nombre;
+
+    /** Texto adicional que se imprime en el documento. @var string */
+    public $texto;
+
+    /** Tipo de documento al que se aplica el formato. @var string */
+    public $tipodoc;
+
+    /** Título que se muestra al imprimir el documento. @var string */
+    public $titulo;
+
+    public function clear(): void
+    {
+        parent::clear();
+        $this->autoaplicar = true;
+    }
+
+    public function install(): string
+    {
+        // needed dependencies
+        new Serie();
+        new Empresa();
+
+        return parent::install();
+    }
+
+    public static function tableName(): string
+    {
+        return 'formatos_documentos';
+    }
+
+    public function test(): bool
+    {
+        $this->nombre = empty($this->nombre) ? Tools::noHtml($this->titulo) : Tools::noHtml($this->nombre);
+        $this->texto = Tools::noHtml($this->texto);
+        $this->titulo = Tools::noHtml($this->titulo);
+
+        if (empty($this->idempresa)) {
+            $this->idempresa = Tools::settings('default', 'idempresa');
+        }
+
+        return parent::test();
+    }
+
+    public function url(string $type = 'auto', string $list = 'EditSettings?activetab=List'): string
+    {
+        return parent::url($type, $list);
+    }
+}

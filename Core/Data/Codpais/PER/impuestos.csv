@@ -1,0 +1,4 @@
+codimpuesto;descripcion;iva;recargo
+IGV_GEN;"IGV General";18;0
+IGV_TURISM;"IGV Sector Turismo";10.5;0
+IGV_EXONER;"IGV Exportación";0;0
